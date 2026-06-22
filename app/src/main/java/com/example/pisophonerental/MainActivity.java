@@ -16,7 +16,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.view.Gravity;
-import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -44,6 +43,9 @@ public class MainActivity extends AppCompatActivity {
     private RelativeLayout overlayLayout;
     private boolean isOverlayShowing = false;
     private boolean isAdminBypassed = false;
+    
+    private int safetyClickCount = 0;
+    private long lastClickTime = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -78,16 +80,24 @@ public class MainActivity extends AppCompatActivity {
         if (isOverlayShowing || isAdminBypassed) return;
 
         runOnUiThread(() -> {
-            overlayLayout = new RelativeLayout(this) {
-                @Override
-                public boolean dispatchKeyEvent(KeyEvent event) {
-                    if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
-                        return true; 
-                    }
-                    return super.dispatchKeyEvent(event);
-                }
-            };
+            overlayLayout = new RelativeLayout(this);
             overlayLayout.setBackgroundColor(0xFF000000);
+            
+            overlayLayout.setOnClickListener(v -> {
+                long currentTime = System.currentTimeMillis();
+                if (currentTime - lastClickTime < 500) {
+                    safetyClickCount++;
+                    if (safetyClickCount >= 5) {
+                        Toast.makeText(this, "Safety Escape Triggered!", Toast.LENGTH_SHORT).show();
+                        isAdminBypassed = true;
+                        hideSystemOverlay();
+                        finish();
+                    }
+                } else {
+                    safetyClickCount = 1;
+                }
+                lastClickTime = currentTime;
+            });
 
             TextView txtStatus = new TextView(this);
             txtStatus.setText("PISOPHONE RENTAL\n\nInsert Coin to Start Using Phone");
@@ -110,7 +120,7 @@ public class MainActivity extends AppCompatActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             btnParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
             btnParams.addRule(RelativeLayout.CENTER_HORIZONTAL);
-            btnParams.setMargins(0, 0, 0, 120); // Pushed up slightly so it doesn't overlap navigation buttons
+            btnParams.setMargins(0, 0, 0, 160); 
             overlayLayout.addView(btnAdmin, btnParams);
 
             int layoutType;
@@ -124,11 +134,12 @@ public class MainActivity extends AppCompatActivity {
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.MATCH_PARENT,
                     layoutType,
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                    | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN 
+                    | WindowManager.LayoutParams.FLAG_DIM_BEHIND,
                     PixelFormat.TRANSLUCENT
             );
             
+            params.dimAmount = 1.0f; 
             params.gravity = Gravity.CENTER;
 
             windowManager.addView(overlayLayout, params);
@@ -143,49 +154,49 @@ public class MainActivity extends AppCompatActivity {
                 windowManager.removeView(overlayLayout);
                 isOverlayShowing = false;
             } catch (Exception e) {
-                // Catch view references
+                // Safe handle
             }
         });
     }
 
-    // --- ANTI-EXIT RECOVERY SYSTEM ---
-    
-    // Catch when Home/Recent button forces the app to lose focus
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         if (!hasFocus && !isAdminBypassed && isOverlayShowing) {
-            forceAppToFront();
+            // Re-evaluate if we are in captive portal mode before pulling front
+            checkCurrentNetworkStateAndEnforce();
         }
     }
 
-    // Catch when the user leaves the application space completely
-    @Override
-    protected void onUserLeaveHint() {
-        super.onUserLeaveHint();
-        if (!isAdminBypassed && isOverlayShowing) {
-            forceAppToFront();
+    private void checkCurrentNetworkStateAndEnforce() {
+        if (isAdminBypassed) return;
+        
+        Network activeNet = connectivityManager.getActiveNetwork();
+        NetworkCapabilities caps = connectivityManager.getNetworkCapabilities(activeNet);
+        
+        if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+            boolean isCaptivePortal = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
+            boolean hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+            
+            // If the portal is active, DO NOT force the app to the front. Let the user tap the portal!
+            if (isCaptivePortal || hasInternet) {
+                hideSystemOverlay();
+                return;
+            }
         }
-    }
-
-    // Catch if another app try to open over it, force it right back
-    @Override
-    protected void onPause() {
-        super.onPause();
-        if (!isAdminBypassed && isOverlayShowing) {
-            forceAppToFront();
-        }
+        
+        // Otherwise, pull back to front
+        forceAppToFront();
     }
 
     private void forceAppToFront() {
+        if (isAdminBypassed) return;
         Intent intent = new Intent(this, MainActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK 
                 | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT 
                 | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         startActivity(intent);
     }
-
-    // ---------------------------------
 
     private void checkPermissions() {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
@@ -214,9 +225,12 @@ public class MainActivity extends AppCompatActivity {
 
                 if (currentSSID.equals(TARGET_SSID)) {
                     boolean hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
-                    if (hasInternet && !isAdminBypassed) {
+                    boolean isCaptivePortal = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
+
+                    // Drop the overlay if there is internet OR if a portal login option is waiting
+                    if ((hasInternet || isCaptivePortal) && !isAdminBypassed) {
                         hideSystemOverlay();
-                    } else if (!hasInternet) {
+                    } else if (!hasInternet && !isCaptivePortal) {
                         showSystemOverlay();
                         forceAppToFront();
                     }
@@ -235,11 +249,12 @@ public class MainActivity extends AppCompatActivity {
 
     private void onAdminClick() {
         final EditText input = new EditText(this);
-        new AlertDialog.Builder(this)
+        
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Admin Bypass")
                 .setMessage("Input security pass:")
                 .setView(input)
-                .setPositiveButton("Bypass", (dialog, which) -> {
+                .setPositiveButton("Bypass", (d, which) -> {
                     if (input.getText().toString().equals(ADMIN_PASSWORD)) {
                         isAdminBypassed = true;
                         hideSystemOverlay();
@@ -249,7 +264,16 @@ public class MainActivity extends AppCompatActivity {
                     }
                 })
                 .setNegativeButton("Close", null)
-                .show();
+                .create();
+
+        if (dialog.getWindow() != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY);
+            } else {
+                dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_PHONE);
+            }
+        }
+        dialog.show();
     }
 
     @Override
