@@ -2,15 +2,18 @@ package com.example.pisophonerental;
 
 import android.Manifest;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
+import android.net.Uri;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
@@ -28,9 +31,10 @@ import androidx.core.app.ActivityCompat;
 
 public class MainActivity extends AppCompatActivity {
 
-    private static final String TARGET_SSID = "\"PisoPhone_Vendo\""; 
+    private static final String TARGET_SSID = "\"PISOWIFI\""; 
     private static final String ADMIN_PASSWORD = "admin_bypass_123";
     private static final int LOCATION_PERMISSION_REQUEST_CODE = 101;
+    private static final int OVERLAY_PERMISSION_REQ_CODE = 102;
 
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
@@ -43,12 +47,11 @@ public class MainActivity extends AppCompatActivity {
         
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         
-        // Main Container Layout (Deep Dark Theme)
+        // Custom Kiosk UI Generation
         RelativeLayout layout = new RelativeLayout(this);
         layout.setBackgroundColor(0xFF000000);
         layout.setPadding(50, 50, 50, 50);
 
-        // Center Status Typography
         txtStatus = new TextView(this);
         txtStatus.setText("PISOPHONE RENTAL\n\nInsert Coin to Start Using Phone");
         txtStatus.setTextColor(0xFFFFFFFF);
@@ -60,18 +63,17 @@ public class MainActivity extends AppCompatActivity {
         textParams.addRule(RelativeLayout.CENTER_IN_PARENT);
         layout.addView(txtStatus, textParams);
 
-        // Visible Minimalist Admin Button at the bottom
         Button btnAdmin = new Button(this);
         btnAdmin.setText("ADMIN LOGIN");
-        btnAdmin.setTextColor(0xFF888888); // Subtle gray so it stays low-key for customers
-        btnAdmin.setBackgroundColor(0x00000000); // Transparent background
+        btnAdmin.setTextColor(0xFF888888);
+        btnAdmin.setBackgroundColor(0x00000000);
         btnAdmin.setOnClickListener(v -> onAdminClick());
         
         RelativeLayout.LayoutParams btnParams = new RelativeLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         btnParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
         btnParams.addRule(RelativeLayout.CENTER_HORIZONTAL);
-        btnParams.setMargins(0, 0, 0, 40); // Lift it slightly above the bottom edge
+        btnParams.setMargins(0, 0, 0, 40);
         layout.addView(btnAdmin, btnParams);
 
         setContentView(layout);
@@ -79,8 +81,19 @@ public class MainActivity extends AppCompatActivity {
         connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
 
         hideSystemUI();
+        checkOverlayPermission();
         checkPermissions();
         startNetworkTracking();
+    }
+
+    private void checkOverlayPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!Settings.canDrawOverlays(this)) {
+                Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getPackageName()));
+                startActivityForResult(intent, OVERLAY_PERMISSION_REQ_CODE);
+            }
+        }
     }
 
     private void checkPermissions() {
@@ -111,7 +124,7 @@ public class MainActivity extends AppCompatActivity {
                 if (currentSSID.equals(TARGET_SSID)) {
                     boolean hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
                     if (hasInternet && !isAdminBypassed) {
-                        runOnUiThread(() -> moveTaskToBack(true));
+                        runOnUiThread(() -> moveTaskToBack(true)); // Minimize completely
                     } else if (!hasInternet) {
                         runOnUiThread(() -> bringToFront());
                     }
@@ -130,7 +143,9 @@ public class MainActivity extends AppCompatActivity {
     private void bringToFront() {
         hideSystemUI();
         if (!isAdminBypassed) {
-            this.recreate();
+            Intent it = new Intent(this, MainActivity.class);
+            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            startActivity(it);
         }
     }
 
@@ -154,7 +169,22 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
-        // Disabled back operations
+        // Blocks manual back button presses
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus && !isAdminBypassed) {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            Network activeNet = cm.getActiveNetwork();
+            NetworkCapabilities caps = cm.getNetworkCapabilities(activeNet);
+            boolean hasInternet = (caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+            
+            if (!hasInternet) {
+                bringToFront();
+            }
+        }
     }
 
     private void hideSystemUI() {
