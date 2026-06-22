@@ -25,6 +25,7 @@ import android.widget.RelativeLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.annotation.NonNull;
+import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
@@ -46,6 +47,15 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        
+        // --- MODERN BACK BUTTON INTERCEPTION (Android 13+) ---
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                // Leaving this completely empty intercepts and "kills" the back button action.
+                // It prevents the app from minimizing or closing when back is pressed.
+            }
+        });
         
         // Custom Kiosk UI Generation
         RelativeLayout layout = new RelativeLayout(this);
@@ -124,7 +134,7 @@ public class MainActivity extends AppCompatActivity {
                 if (currentSSID.equals(TARGET_SSID)) {
                     boolean hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
                     if (hasInternet && !isAdminBypassed) {
-                        runOnUiThread(() -> moveTaskToBack(true)); // Minimize completely
+                        runOnUiThread(() -> moveTaskToBack(true)); 
                     } else if (!hasInternet) {
                         runOnUiThread(() -> bringToFront());
                     }
@@ -167,9 +177,10 @@ public class MainActivity extends AppCompatActivity {
                 .show();
     }
 
+    // Legacy fallback tracker for older Android operating systems
     @Override
     public void onBackPressed() {
-        // Blocks manual back button presses
+        // Left empty intentionally
     }
 
     @Override
