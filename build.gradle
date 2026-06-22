@@ -8,12 +8,7 @@ buildscript {
     }
 }
 
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
+// We deleted the "allprojects" block from here because settings.gradle already manages it!
 
 task clean(type: Delete) {
     delete rootProject.buildDir
