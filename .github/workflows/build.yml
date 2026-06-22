@@ -18,14 +18,14 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: Setup Gradle
+    - name: Setup Gradle System
       uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: 8.5 # Forces GitHub to handle the engine version automatically
 
-    - name: Grant Execute Permission for Gradle
-      run: chmod +x gradlew
-
-    - name: Build Debug APK via Cloud Engine
-      run: ./gradlew assembleDebug
+    # We use global 'gradle' instead of local './gradlew' since we skipped the wrapper files
+     scrimmage-name: Build Debug APK via Cloud Engine
+      run: gradle assembleDebug
 
     - name: Upload Finished APK Artifact
       uses: actions/upload-artifact@v4
