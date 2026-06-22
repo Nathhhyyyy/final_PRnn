@@ -9,10 +9,15 @@ import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.EditText;
+import android.widget.RelativeLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.annotation.NonNull;
@@ -37,8 +42,8 @@ public class MainActivity extends AppCompatActivity {
         
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         
-        // Setup minimalist UI purely programmatically to skip saving layout XML files
-        androidx.widget.RelativeLayout layout = new androidx.widget.RelativeLayout(this);
+        // Build the programmatic UI layout
+        RelativeLayout layout = new RelativeLayout(this);
         layout.setBackgroundColor(0xFF000000);
 
         txtStatus = new TextView(this);
@@ -47,16 +52,16 @@ public class MainActivity extends AppCompatActivity {
         txtStatus.setTextSize(24);
         txtStatus.setGravity(android.view.Gravity.CENTER);
         
-        androidx.widget.RelativeLayout.LayoutParams params = new androidx.widget.RelativeLayout.LayoutParams(
-            android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.addRule(androidx.widget.RelativeLayout.CENTER_IN_PARENT);
+        RelativeLayout.LayoutParams params = new RelativeLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.addRule(RelativeLayout.CENTER_IN_PARENT);
         layout.addView(txtStatus, params);
 
-        // Invisible Admin button in the top right corner
+        // Invisible Admin target point
         View adminView = new View(this);
-        androidx.widget.RelativeLayout.LayoutParams btnParams = new androidx.widget.RelativeLayout.LayoutParams(150, 150);
-        btnParams.addRule(androidx.widget.RelativeLayout.ALIGN_PARENT_TOP);
-        btnParams.addRule(androidx.widget.RelativeLayout.ALIGN_PARENT_END);
+        RelativeLayout.LayoutParams btnParams = new RelativeLayout.LayoutParams(150, 150);
+        btnParams.addRule(RelativeLayout.ALIGN_PARENT_TOP);
+        btnParams.addRule(RelativeLayout.ALIGN_PARENT_END);
         adminView.setOnClickListener(v -> onAdminClick());
         layout.addView(adminView, btnParams);
 
@@ -84,9 +89,15 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onCapabilitiesChanged(@NonNull Network network, @NonNull NetworkCapabilities capabilities) {
                 super.onCapabilitiesChanged(network, capabilities);
+                
+                String currentSSID = "";
                 WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-                WifiInfo wifiInfo = wifiManager.getConnectionInfo();
-                String currentSSID = wifiInfo.getSSID();
+                if (wifiManager != null) {
+                    WifiInfo wifiInfo = wifiManager.getConnectionInfo();
+                    if (wifiInfo != null) {
+                        currentSSID = wifiInfo.getSSID();
+                    }
+                }
 
                 if (currentSSID.equals(TARGET_SSID)) {
                     boolean hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
@@ -133,15 +144,34 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
-    public void onBackPressed() {}
+    public void onBackPressed() {
+        // Disabled back operations
+    }
 
     private void hideSystemUI() {
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                | View.SYSTEM_UI_FLAG_FULLSCREEN);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            final WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
+                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            // Fallback for older API versions
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN);
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (connectivityManager != null && networkCallback != null) {
+            connectivityManager.unregisterNetworkCallback(networkCallback);
+        }
     }
 }
