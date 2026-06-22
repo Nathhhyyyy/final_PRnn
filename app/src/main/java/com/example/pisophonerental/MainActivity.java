@@ -4,6 +4,7 @@ import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.PixelFormat;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -14,10 +15,10 @@ import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.WindowInsets;
-import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -25,7 +26,6 @@ import android.widget.RelativeLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.annotation.NonNull;
-import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
@@ -39,60 +39,28 @@ public class MainActivity extends AppCompatActivity {
 
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
-    private TextView txtStatus;
+    
+    // Window Manager Elements for Persistent Locking
+    private WindowManager windowManager;
+    private RelativeLayout overlayLayout;
+    private boolean isOverlayShowing = false;
     private boolean isAdminBypassed = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        
-        // --- MODERN BACK BUTTON INTERCEPTION (Android 13+) ---
-        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
-            @Override
-            public void handleOnBackPressed() {
-                // Leaving this completely empty intercepts and "kills" the back button action.
-                // It prevents the app from minimizing or closing when back is pressed.
-            }
-        });
-        
-        // Custom Kiosk UI Generation
-        RelativeLayout layout = new RelativeLayout(this);
-        layout.setBackgroundColor(0xFF000000);
-        layout.setPadding(50, 50, 50, 50);
+        // Transparent anchor activity
+        View emptyView = new View(this);
+        setContentView(emptyView);
 
-        txtStatus = new TextView(this);
-        txtStatus.setText("PISOPHONE RENTAL\n\nInsert Coin to Start Using Phone");
-        txtStatus.setTextColor(0xFFFFFFFF);
-        txtStatus.setTextSize(24);
-        txtStatus.setGravity(android.view.Gravity.CENTER);
-        
-        RelativeLayout.LayoutParams textParams = new RelativeLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        textParams.addRule(RelativeLayout.CENTER_IN_PARENT);
-        layout.addView(txtStatus, textParams);
-
-        Button btnAdmin = new Button(this);
-        btnAdmin.setText("ADMIN LOGIN");
-        btnAdmin.setTextColor(0xFF888888);
-        btnAdmin.setBackgroundColor(0x00000000);
-        btnAdmin.setOnClickListener(v -> onAdminClick());
-        
-        RelativeLayout.LayoutParams btnParams = new RelativeLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        btnParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
-        btnParams.addRule(RelativeLayout.CENTER_HORIZONTAL);
-        btnParams.setMargins(0, 0, 0, 40);
-        layout.addView(btnAdmin, btnParams);
-
-        setContentView(layout);
-        
+        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
 
-        hideSystemUI();
         checkOverlayPermission();
         checkPermissions();
+        
+        // Initialize network tracker loop
         startNetworkTracking();
     }
 
@@ -102,8 +70,92 @@ public class MainActivity extends AppCompatActivity {
                 Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                         Uri.parse("package:" + getPackageName()));
                 startActivityForResult(intent, OVERLAY_PERMISSION_REQ_CODE);
+            } else {
+                showSystemOverlay();
             }
+        } else {
+            showSystemOverlay();
         }
+    }
+
+    private void showSystemOverlay() {
+        if (isOverlayShowing || isAdminBypassed) return;
+
+        runOnUiThread(() -> {
+            // Build the lock interface block programmatically
+            overlayLayout = new RelativeLayout(this) {
+                @Override
+                public boolean dispatchKeyEvent(KeyEvent event) {
+                    // Trap physical or gesture back clicks directly at the screen engine layer
+                    if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+                        return true; // Consumes event so phone ignores the back action completely
+                    }
+                    return super.dispatchKeyEvent(event);
+                }
+            };
+            overlayLayout.setBackgroundColor(0xFF000000);
+
+            TextView txtStatus = new TextView(this);
+            txtStatus.setText("PISOPHONE RENTAL\n\nInsert Coin to Start Using Phone");
+            txtStatus.setTextColor(0xFFFFFFFF);
+            txtStatus.setTextSize(24);
+            txtStatus.setGravity(Gravity.CENTER);
+            
+            RelativeLayout.LayoutParams textParams = new RelativeLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            textParams.addRule(RelativeLayout.CENTER_IN_PARENT);
+            overlayLayout.addView(txtStatus, textParams);
+
+            Button btnAdmin = new Button(this);
+            btnAdmin.setText("ADMIN LOGIN");
+            btnAdmin.setTextColor(0xFF888888);
+            btnAdmin.setBackgroundColor(0x00000000);
+            btnAdmin.setOnClickListener(v -> onAdminClick());
+            
+            RelativeLayout.LayoutParams btnParams = new RelativeLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            btnParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
+            btnParams.addRule(RelativeLayout.CENTER_HORIZONTAL);
+            btnParams.setMargins(0, 0, 0, 80);
+            overlayLayout.addView(btnAdmin, btnParams);
+
+            // Set system layout flags to obscure navigation and status tray bars
+            int layoutType;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                layoutType = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
+            } else {
+                layoutType = WindowManager.LayoutParams.TYPE_PHONE;
+            }
+
+            WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    layoutType,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE 
+                    | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                    | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                    PixelFormat.TRANSLUCENT
+            );
+            
+            // Allow focus adjustments for the dialog text inputs
+            params.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE; 
+            params.gravity = Gravity.CENTER;
+
+            windowManager.addView(overlayLayout, params);
+            isOverlayShowing = true;
+        });
+    }
+
+    private void hideSystemOverlay() {
+        if (!isOverlayShowing || overlayLayout == null) return;
+        runOnUiThread(() -> {
+            try {
+                windowManager.removeView(overlayLayout);
+                isOverlayShowing = false;
+            } catch (Exception e) {
+                // Catch reference drop errors
+            }
+        });
     }
 
     private void checkPermissions() {
@@ -134,9 +186,9 @@ public class MainActivity extends AppCompatActivity {
                 if (currentSSID.equals(TARGET_SSID)) {
                     boolean hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
                     if (hasInternet && !isAdminBypassed) {
-                        runOnUiThread(() -> moveTaskToBack(true)); 
+                        hideSystemOverlay();
                     } else if (!hasInternet) {
-                        runOnUiThread(() -> bringToFront());
+                        showSystemOverlay();
                     }
                 }
             }
@@ -144,19 +196,10 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onLost(@NonNull Network network) {
                 super.onLost(network);
-                runOnUiThread(() -> bringToFront());
+                showSystemOverlay();
             }
         };
         connectivityManager.registerNetworkCallback(networkRequest, networkCallback);
-    }
-
-    private void bringToFront() {
-        hideSystemUI();
-        if (!isAdminBypassed) {
-            Intent it = new Intent(this, MainActivity.class);
-            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-            startActivity(it);
-        }
     }
 
     private void onAdminClick() {
@@ -168,6 +211,7 @@ public class MainActivity extends AppCompatActivity {
                 .setPositiveButton("Bypass", (dialog, which) -> {
                     if (input.getText().toString().equals(ADMIN_PASSWORD)) {
                         isAdminBypassed = true;
+                        hideSystemOverlay();
                         finish();
                     } else {
                         Toast.makeText(MainActivity.this, "Invalid Password", Toast.LENGTH_SHORT).show();
@@ -177,48 +221,18 @@ public class MainActivity extends AppCompatActivity {
                 .show();
     }
 
-    // Legacy fallback tracker for older Android operating systems
     @Override
-    public void onBackPressed() {
-        // Left empty intentionally
-    }
-
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-        if (!hasFocus && !isAdminBypassed) {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-            Network activeNet = cm.getActiveNetwork();
-            NetworkCapabilities caps = cm.getNetworkCapabilities(activeNet);
-            boolean hasInternet = (caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
-            
-            if (!hasInternet) {
-                bringToFront();
-            }
-        }
-    }
-
-    private void hideSystemUI() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            final WindowInsetsController controller = getWindow().getInsetsController();
-            if (controller != null) {
-                controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
-                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-            }
-        } else {
-            getWindow().getDecorView().setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_FULLSCREEN);
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == OVERLAY_PERMISSION_REQ_CODE) {
+            showSystemOverlay();
         }
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        hideSystemOverlay();
         if (connectivityManager != null && networkCallback != null) {
             connectivityManager.unregisterNetworkCallback(networkCallback);
         }
