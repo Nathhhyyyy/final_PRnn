@@ -16,6 +16,7 @@ import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.widget.Button;
 import android.widget.EditText;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
@@ -42,28 +43,36 @@ public class MainActivity extends AppCompatActivity {
         
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         
-        // Build the programmatic UI layout
+        // Main Container Layout (Deep Dark Theme)
         RelativeLayout layout = new RelativeLayout(this);
         layout.setBackgroundColor(0xFF000000);
+        layout.setPadding(50, 50, 50, 50);
 
+        // Center Status Typography
         txtStatus = new TextView(this);
         txtStatus.setText("PISOPHONE RENTAL\n\nInsert Coin to Start Using Phone");
         txtStatus.setTextColor(0xFFFFFFFF);
         txtStatus.setTextSize(24);
         txtStatus.setGravity(android.view.Gravity.CENTER);
         
-        RelativeLayout.LayoutParams params = new RelativeLayout.LayoutParams(
+        RelativeLayout.LayoutParams textParams = new RelativeLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.addRule(RelativeLayout.CENTER_IN_PARENT);
-        layout.addView(txtStatus, params);
+        textParams.addRule(RelativeLayout.CENTER_IN_PARENT);
+        layout.addView(txtStatus, textParams);
 
-        // Invisible Admin target point
-        View adminView = new View(this);
-        RelativeLayout.LayoutParams btnParams = new RelativeLayout.LayoutParams(150, 150);
-        btnParams.addRule(RelativeLayout.ALIGN_PARENT_TOP);
-        btnParams.addRule(RelativeLayout.ALIGN_PARENT_END);
-        adminView.setOnClickListener(v -> onAdminClick());
-        layout.addView(adminView, btnParams);
+        // Visible Minimalist Admin Button at the bottom
+        Button btnAdmin = new Button(this);
+        btnAdmin.setText("ADMIN LOGIN");
+        btnAdmin.setTextColor(0xFF888888); // Subtle gray so it stays low-key for customers
+        btnAdmin.setBackgroundColor(0x00000000); // Transparent background
+        btnAdmin.setOnClickListener(v -> onAdminClick());
+        
+        RelativeLayout.LayoutParams btnParams = new RelativeLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        btnParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
+        btnParams.addRule(RelativeLayout.CENTER_HORIZONTAL);
+        btnParams.setMargins(0, 0, 0, 40); // Lift it slightly above the bottom edge
+        layout.addView(btnAdmin, btnParams);
 
         setContentView(layout);
         
@@ -156,7 +165,6 @@ public class MainActivity extends AppCompatActivity {
                 controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
             }
         } else {
-            // Fallback for older API versions
             getWindow().getDecorView().setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                     | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
