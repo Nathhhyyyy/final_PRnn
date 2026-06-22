@@ -40,7 +40,6 @@ public class MainActivity extends AppCompatActivity {
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
     
-    // Window Manager Elements for Persistent Locking
     private WindowManager windowManager;
     private RelativeLayout overlayLayout;
     private boolean isOverlayShowing = false;
@@ -50,7 +49,6 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         
-        // Transparent anchor activity
         View emptyView = new View(this);
         setContentView(emptyView);
 
@@ -59,8 +57,6 @@ public class MainActivity extends AppCompatActivity {
 
         checkOverlayPermission();
         checkPermissions();
-        
-        // Initialize network tracker loop
         startNetworkTracking();
     }
 
@@ -82,13 +78,11 @@ public class MainActivity extends AppCompatActivity {
         if (isOverlayShowing || isAdminBypassed) return;
 
         runOnUiThread(() -> {
-            // Build the lock interface block programmatically
             overlayLayout = new RelativeLayout(this) {
                 @Override
                 public boolean dispatchKeyEvent(KeyEvent event) {
-                    // Trap physical or gesture back clicks directly at the screen engine layer
                     if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
-                        return true; // Consumes event so phone ignores the back action completely
+                        return true; 
                     }
                     return super.dispatchKeyEvent(event);
                 }
@@ -116,10 +110,9 @@ public class MainActivity extends AppCompatActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             btnParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
             btnParams.addRule(RelativeLayout.CENTER_HORIZONTAL);
-            btnParams.setMargins(0, 0, 0, 80);
+            btnParams.setMargins(0, 0, 0, 120); // Pushed up slightly so it doesn't overlap navigation buttons
             overlayLayout.addView(btnAdmin, btnParams);
 
-            // Set system layout flags to obscure navigation and status tray bars
             int layoutType;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 layoutType = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
@@ -131,14 +124,11 @@ public class MainActivity extends AppCompatActivity {
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.MATCH_PARENT,
                     layoutType,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE 
-                    | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                     | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                     PixelFormat.TRANSLUCENT
             );
             
-            // Allow focus adjustments for the dialog text inputs
-            params.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE; 
             params.gravity = Gravity.CENTER;
 
             windowManager.addView(overlayLayout, params);
@@ -153,10 +143,49 @@ public class MainActivity extends AppCompatActivity {
                 windowManager.removeView(overlayLayout);
                 isOverlayShowing = false;
             } catch (Exception e) {
-                // Catch reference drop errors
+                // Catch view references
             }
         });
     }
+
+    // --- ANTI-EXIT RECOVERY SYSTEM ---
+    
+    // Catch when Home/Recent button forces the app to lose focus
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus && !isAdminBypassed && isOverlayShowing) {
+            forceAppToFront();
+        }
+    }
+
+    // Catch when the user leaves the application space completely
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (!isAdminBypassed && isOverlayShowing) {
+            forceAppToFront();
+        }
+    }
+
+    // Catch if another app try to open over it, force it right back
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (!isAdminBypassed && isOverlayShowing) {
+            forceAppToFront();
+        }
+    }
+
+    private void forceAppToFront() {
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK 
+                | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT 
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(intent);
+    }
+
+    // ---------------------------------
 
     private void checkPermissions() {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
@@ -189,6 +218,7 @@ public class MainActivity extends AppCompatActivity {
                         hideSystemOverlay();
                     } else if (!hasInternet) {
                         showSystemOverlay();
+                        forceAppToFront();
                     }
                 }
             }
@@ -197,6 +227,7 @@ public class MainActivity extends AppCompatActivity {
             public void onLost(@NonNull Network network) {
                 super.onLost(network);
                 showSystemOverlay();
+                forceAppToFront();
             }
         };
         connectivityManager.registerNetworkCallback(networkRequest, networkCallback);
