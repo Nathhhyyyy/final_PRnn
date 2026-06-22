@@ -21,10 +21,9 @@ jobs:
     - name: Setup Gradle System
       uses: gradle/actions/setup-gradle@v3
       with:
-        gradle-version: 8.5 # Forces GitHub to handle the engine version automatically
+        gradle-version: 8.5
 
-    # We use global 'gradle' instead of local './gradlew' since we skipped the wrapper files
-     scrimmage-name: Build Debug APK via Cloud Engine
+    - name: Build Debug APK via Cloud Engine
       run: gradle assembleDebug
 
     - name: Upload Finished APK Artifact
