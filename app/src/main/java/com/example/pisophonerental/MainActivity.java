@@ -39,16 +39,18 @@ import androidx.core.app.ActivityCompat;
 
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
 
 import java.io.IOException;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends AppCompatActivity {
 
     private static final String TARGET_SSID = "\"PISOWIFI\""; 
     private static final String ADMIN_PASSWORD = "admin_bypass_123";
     private static final String PORTAL_URL = "http://10.0.0.1";
-    private static final String STATUS_URL = "http://10.0.0.1/status"; 
+    private static final String LOGOUT_URL = "http://10.0.0.1/logout"; // Used to auto-cancel session
 
     private static final int LOCATION_PERMISSION_REQUEST_CODE = 101;
     private static final int OVERLAY_PERMISSION_REQ_CODE = 102;
@@ -59,6 +61,7 @@ public class MainActivity extends AppCompatActivity {
     private WindowManager windowManager;
     private RelativeLayout overlayLayout;
     private View statusBarShield;
+    private TextView floatingTimerView; // New floating timer display
     
     private WebView portalWebView;
     private TextView txtStatus;
@@ -71,9 +74,9 @@ public class MainActivity extends AppCompatActivity {
     private boolean isTimerRunning = false;
     private long currentRentalTimeLeftMs = 0;
     
-    private Handler extensionCheckHandler = new Handler(Looper.getMainLooper());
-    private Runnable extensionCheckRunnable;
-    private long lastKnownRouterTimeMs = 0;
+    private Handler loopHandler = new Handler(Looper.getMainLooper());
+    private Runnable sessionLoopRunnable;
+    private long lastKnownRouterTimeMs = -1; 
 
     private int safetyClickCount = 0;
     private long lastClickTime = 0;
@@ -88,10 +91,10 @@ public class MainActivity extends AppCompatActivity {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
 
+        setupSessionLoop();
         checkOverlayPermission();
         checkPermissions();
         startNetworkTracking();
-        setupExtensionChecker();
     }
 
     private void checkOverlayPermission() {
@@ -101,10 +104,58 @@ public class MainActivity extends AppCompatActivity {
                         Uri.parse("package:" + getPackageName()));
                 startActivityForResult(intent, OVERLAY_PERMISSION_REQ_CODE);
             } else {
+                setupFloatingTimer();
                 showSystemOverlay();
             }
         } else {
+            setupFloatingTimer();
             showSystemOverlay();
+        }
+    }
+
+    // --- NEW: FLOATING TIMER UI ---
+    private void setupFloatingTimer() {
+        if (floatingTimerView != null) return;
+        
+        runOnUiThread(() -> {
+            floatingTimerView = new TextView(this);
+            floatingTimerView.setTextColor(0xFFFFFFFF);
+            floatingTimerView.setBackgroundColor(0xAA000000); // Dark semi-transparent pill
+            floatingTimerView.setPadding(30, 10, 30, 10);
+            floatingTimerView.setTextSize(14);
+            floatingTimerView.setGravity(Gravity.CENTER);
+            floatingTimerView.setVisibility(View.GONE); // Hidden initially
+
+            int layoutType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ? 
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
+
+            WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    layoutType,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                    PixelFormat.TRANSLUCENT
+            );
+            params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+            params.y = 50; // Sits just below the camera notch
+
+            windowManager.addView(floatingTimerView, params);
+        });
+    }
+
+    private void updateFloatingTimerText(long millis) {
+        if (floatingTimerView != null) {
+            int hours = (int) (millis / 3600000);
+            int minutes = (int) (millis % 3600000) / 60000;
+            int seconds = (int) (millis % 60000) / 1000;
+            
+            String timeFormatted;
+            if (hours > 0) {
+                timeFormatted = String.format(Locale.getDefault(), "Time Left: %d:%02d:%02d", hours, minutes, seconds);
+            } else {
+                timeFormatted = String.format(Locale.getDefault(), "Time Left: %02d:%02d", minutes, seconds);
+            }
+            floatingTimerView.setText(timeFormatted);
         }
     }
 
@@ -112,6 +163,8 @@ public class MainActivity extends AppCompatActivity {
         if (isOverlayShowing || isAdminBypassed) return;
 
         runOnUiThread(() -> {
+            if (floatingTimerView != null) floatingTimerView.setVisibility(View.GONE); // Hide mini timer when locked
+
             overlayLayout = new RelativeLayout(this);
             overlayLayout.setBackgroundColor(0xFF000000);
             
@@ -120,10 +173,11 @@ public class MainActivity extends AppCompatActivity {
                 if (currentTime - lastClickTime < 500) {
                     safetyClickCount++;
                     if (safetyClickCount >= 5) {
-                        Toast.makeText(this, "Safety Escape Triggered!", Toast.LENGTH_SHORT).show();
                         isAdminBypassed = true;
                         stopRentalTimer();
+                        stopSessionLoop();
                         hideSystemOverlay();
+                        if (floatingTimerView != null) floatingTimerView.setVisibility(View.GONE);
                         finish();
                     }
                 } else {
@@ -132,12 +186,12 @@ public class MainActivity extends AppCompatActivity {
                 lastClickTime = currentTime;
             });
 
-            // 1. Setup Embedded Browser Panel
             portalWebView = new WebView(this);
             RelativeLayout.LayoutParams webParams = new RelativeLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
             webParams.setMargins(0, 0, 0, 320); 
-            portalWebView.setVisibility(View.GONE); 
+            portalWebView.setVisibility(View.VISIBLE); 
+            portalWebView.loadUrl(PORTAL_URL);
             
             WebSettings webSettings = portalWebView.getSettings();
             webSettings.setJavaScriptEnabled(true);
@@ -147,34 +201,28 @@ public class MainActivity extends AppCompatActivity {
                 @Override
                 public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                     super.onReceivedError(view, request, error);
-                    runOnUiThread(() -> {
-                        if (btnRetry != null) btnRetry.setVisibility(View.VISIBLE);
-                    });
+                    runOnUiThread(() -> { if (btnRetry != null) btnRetry.setVisibility(View.VISIBLE); });
                 }
-
                 @Override
                 public void onPageFinished(WebView view, String url) {
                     super.onPageFinished(view, url);
-                    if (!url.equals("about:blank") && btnRetry != null) {
-                        btnRetry.setVisibility(View.GONE);
-                    }
+                    if (btnRetry != null) btnRetry.setVisibility(View.GONE);
                 }
             });
             overlayLayout.addView(portalWebView, webParams);
 
-            // 2. Setup Central Status Text Window
             txtStatus = new TextView(this);
-            txtStatus.setText("PISO PHONE RENTAL\n\nInsert Coin to Start Using Phone");
+            txtStatus.setText("PISO PHONE RENTAL\n\nPlease Connect to Wi-Fi");
             txtStatus.setTextColor(0xFFFFFFFF);
             txtStatus.setTextSize(24);
             txtStatus.setGravity(Gravity.CENTER);
+            txtStatus.setVisibility(View.GONE); 
             
             RelativeLayout.LayoutParams textParams = new RelativeLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             textParams.addRule(RelativeLayout.CENTER_IN_PARENT);
             overlayLayout.addView(txtStatus, textParams);
 
-            // 3. Setup Manual Refresh/Retry Connection Button Link
             btnRetry = new Button(this);
             btnRetry.setText("RETRY CONNECTION");
             btnRetry.setTextColor(0xFFFFFFFF);
@@ -192,7 +240,6 @@ public class MainActivity extends AppCompatActivity {
             retryParams.setMargins(0, 200, 0, 0); 
             overlayLayout.addView(btnRetry, retryParams);
 
-            // 4. Setup Admin Login Control Button (Added last to float over WebView)
             Button btnAdmin = new Button(this);
             btnAdmin.setText("ADMIN LOGIN");
             btnAdmin.setTextColor(0xFF888888);
@@ -216,7 +263,6 @@ public class MainActivity extends AppCompatActivity {
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_DIM_BEHIND,
                     PixelFormat.TRANSLUCENT
             );
-            
             params.dimAmount = 1.0f; 
             params.gravity = Gravity.CENTER;
 
@@ -229,24 +275,16 @@ public class MainActivity extends AppCompatActivity {
 
     private void blockNotificationBar(int layoutType) {
         if (statusBarShield != null) return;
-
         statusBarShield = new View(this);
         int statusBarHeight = (int) (25 * getResources().getDisplayMetrics().density);
 
         WindowManager.LayoutParams statusParams = new WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                statusBarHeight,
-                layoutType,
+                WindowManager.LayoutParams.MATCH_PARENT, statusBarHeight, layoutType,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
         );
         statusParams.gravity = Gravity.TOP;
-
-        try {
-            windowManager.addView(statusBarShield, statusParams);
-        } catch (Exception e) {
-            // Layout trap
-        }
+        try { windowManager.addView(statusBarShield, statusParams); } catch (Exception e) { }
     }
 
     private void hideSystemOverlay() {
@@ -259,9 +297,12 @@ public class MainActivity extends AppCompatActivity {
                     statusBarShield = null;
                 }
                 isOverlayShowing = false;
-            } catch (Exception e) {
-                // Window protection
-            }
+                
+                // Show floating timer when unlocked
+                if (isTimerRunning && floatingTimerView != null) {
+                    floatingTimerView.setVisibility(View.VISIBLE);
+                }
+            } catch (Exception e) { }
         });
     }
 
@@ -276,16 +317,13 @@ public class MainActivity extends AppCompatActivity {
     private void forceAppToFront() {
         if (isAdminBypassed) return;
         Intent intent = new Intent(this, MainActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK 
-                | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT 
-                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         startActivity(intent);
     }
 
     private void startNetworkTracking() {
         NetworkRequest networkRequest = new NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .build();
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build();
 
         networkCallback = new ConnectivityManager.NetworkCallback() {
             @Override
@@ -296,9 +334,7 @@ public class MainActivity extends AppCompatActivity {
                 WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
                 if (wifiManager != null) {
                     WifiInfo wifiInfo = wifiManager.getConnectionInfo();
-                    if (wifiInfo != null) {
-                        currentSSID = wifiInfo.getSSID();
-                    }
+                    if (wifiInfo != null) currentSSID = wifiInfo.getSSID();
                 }
 
                 if (currentSSID.equals(TARGET_SSID)) {
@@ -307,19 +343,11 @@ public class MainActivity extends AppCompatActivity {
 
                     runOnUiThread(() -> {
                         if (hasInternet && !isAdminBypassed) {
-                            if (!isTimerRunning) {
-                                fetchRouterSessionAndApplyFormula(false);
-                            }
-                            startExtensionLoop();
-                        } else if (isCaptivePortal && !isAdminBypassed) {
-                            stopRentalTimer(); 
-                            stopExtensionLoop();
+                            startSessionLoop();
                             if (txtStatus != null) txtStatus.setVisibility(View.GONE);
-                            if (portalWebView != null) {
-                                portalWebView.setVisibility(View.VISIBLE);
-                                portalWebView.loadUrl(PORTAL_URL);
-                            }
-                        } else if (!isTimerRunning) {
+                            if (portalWebView != null) portalWebView.setVisibility(View.VISIBLE);
+                        } else if (isCaptivePortal && !isAdminBypassed) {
+                            stopSessionLoop();
                             resetToLockView();
                             showSystemOverlay();
                         }
@@ -331,8 +359,9 @@ public class MainActivity extends AppCompatActivity {
             public void onLost(@NonNull Network network) {
                 super.onLost(network);
                 runOnUiThread(() -> {
+                    lastKnownRouterTimeMs = -1; 
                     stopRentalTimer();
-                    stopExtensionLoop();
+                    stopSessionLoop();
                     resetToLockView();
                     showSystemOverlay();
                     forceAppToFront();
@@ -342,68 +371,68 @@ public class MainActivity extends AppCompatActivity {
         connectivityManager.registerNetworkCallback(networkRequest, networkCallback);
     }
 
-    private void setupExtensionChecker() {
-        extensionCheckRunnable = new Runnable() {
+    private void setupSessionLoop() {
+        sessionLoopRunnable = new Runnable() {
             @Override
             public void run() {
-                if (isTimerRunning && !isAdminBypassed) {
-                    fetchRouterSessionAndApplyFormula(true); 
-                }
-                extensionCheckHandler.postDelayed(this, 30000); 
+                if (!isAdminBypassed) fetchRouterSessionAndApplyFormula();
+                loopHandler.postDelayed(this, 10000); 
             }
         };
     }
 
-    private void startExtensionLoop() {
-        extensionCheckHandler.removeCallbacks(extensionCheckRunnable);
-        extensionCheckHandler.postDelayed(extensionCheckRunnable, 30000);
+    private void startSessionLoop() {
+        loopHandler.removeCallbacks(sessionLoopRunnable);
+        loopHandler.post(sessionLoopRunnable);
     }
 
-    private void stopExtensionLoop() {
-        extensionCheckHandler.removeCallbacks(extensionCheckRunnable);
+    private void stopSessionLoop() {
+        loopHandler.removeCallbacks(sessionLoopRunnable);
     }
 
-    private void fetchRouterSessionAndApplyFormula(boolean isCheckingForExtension) {
+    private void fetchRouterSessionAndApplyFormula() {
         new Thread(() -> {
             try {
-                Document doc = Jsoup.connect(STATUS_URL).timeout(4000).get();
-                Element timeElement = doc.select("td:contains(remain), td:contains(Time Left), .time-left").first();
+                Document doc = Jsoup.connect(PORTAL_URL).timeout(5000).get();
+                String pageText = doc.body().text().toLowerCase();
                 
-                if (timeElement != null) {
-                    String currentRouterTimeStr = timeElement.nextElementSibling() != null ? 
-                            timeElement.nextElementSibling().text().toLowerCase() : timeElement.text().toLowerCase();
+                long currentRouterMs = 0;
+                
+                int remainIdx = pageText.indexOf("remain");
+                if (remainIdx == -1) remainIdx = pageText.indexOf("time left");
+                if (remainIdx == -1) remainIdx = pageText.indexOf("status: connected"); 
+                
+                if (remainIdx != -1) {
+                    String substring = pageText.substring(remainIdx);
+                    Matcher m = Pattern.compile("(\\d+\\s*h\\s*:?\\s*\\d+\\s*m\\s*:?\\s*\\d+\\s*s|\\d+\\s*m\\s*:?\\s*\\d+\\s*s|\\d+:\\d+:\\d+|\\d+\\s*h\\s*\\d+\\s*m|\\d+\\s*m|\\d+\\s*s)").matcher(substring);
+                    if (m.find()) {
+                        currentRouterMs = parseTimeToMillis(m.group(1));
+                    }
+                }
 
-                    long currentRouterMs = parseTimeToMillis(currentRouterTimeStr);
-
-                    if (isCheckingForExtension) {
-                        if (currentRouterMs > lastKnownRouterTimeMs) {
-                            long differenceMs = currentRouterMs - lastKnownRouterTimeMs;
-                            long reducedExtensionMs = differenceMs / 2;
-
-                            lastKnownRouterTimeMs = currentRouterMs;
+                if (currentRouterMs > 0) {
+                    if (lastKnownRouterTimeMs == -1) {
+                        lastKnownRouterTimeMs = currentRouterMs;
+                        long halvedMs = currentRouterMs / 2;
+                        runOnUiThread(() -> startRentalSession(halvedMs));
+                    } else {
+                        if (currentRouterMs > lastKnownRouterTimeMs + 5000) {
+                            long diffMs = currentRouterMs - lastKnownRouterTimeMs;
+                            long reducedExtensionMs = diffMs / 2;
+                            lastKnownRouterTimeMs = currentRouterMs; 
+                            
                             runOnUiThread(() -> {
-                                if (isTimerRunning) {
-                                    long updatedDuration = currentRentalTimeLeftMs + reducedExtensionMs;
-                                    stopRentalTimer();
-                                    startRentalTimer(updatedDuration);
-                                    Toast.makeText(MainActivity.this, "Time Extended (50% Rate Applied)!", Toast.LENGTH_SHORT).show();
-                                }
+                                long newTime = isTimerRunning ? currentRentalTimeLeftMs + reducedExtensionMs : reducedExtensionMs;
+                                startRentalSession(newTime);
+                                Toast.makeText(MainActivity.this, "Coin Inserted! Time Extended.", Toast.LENGTH_SHORT).show();
                             });
                         } else {
                             lastKnownRouterTimeMs = currentRouterMs;
                         }
-                    } else {
-                        lastKnownRouterTimeMs = currentRouterMs;
-                        long halvedInitialSessionMs = currentRouterMs / 2;
-
-                        runOnUiThread(() -> {
-                            startRentalTimer(halvedInitialSessionMs);
-                            hideSystemOverlay();
-                        });
                     }
                 }
             } catch (IOException e) {
-                // Connection protection
+                // Ignore connection drops
             }
         }).start();
     }
@@ -411,76 +440,96 @@ public class MainActivity extends AppCompatActivity {
     private long parseTimeToMillis(String timeStr) {
         long totalMs = 0;
         try {
-            if (timeStr.contains(":")) {
-                String[] units = timeStr.split(":");
-                long hours = Long.parseLong(units[0].trim());
-                long minutes = Long.parseLong(units[1].trim());
-                long seconds = Long.parseLong(units[2].trim());
-                totalMs = ((hours * 3600) + (minutes * 60) + seconds) * 1000;
-            } else {
-                String temp = timeStr.trim();
-                if (temp.contains("h")) {
-                    String[] parts = temp.split("h");
-                    totalMs += Long.parseLong(parts[0].replaceAll("[^0-9]", "")) * 3600 * 1000;
-                    if (parts.length > 1 && parts[1].contains("m")) {
-                        totalMs += Long.parseLong(parts[1].replaceAll("[^0-9]", "")) * 60 * 1000;
-                    }
-                } else if (temp.contains("m")) {
-                    totalMs += Long.parseLong(temp.replaceAll("[^0-9]", "")) * 60 * 1000;
+            timeStr = timeStr.toLowerCase().replaceAll("\\s+", ""); 
+            
+            if (timeStr.contains("h") || timeStr.contains("m") || timeStr.contains("s")) {
+                timeStr = timeStr.replace(":", ""); 
+                
+                Matcher hMatcher = Pattern.compile("(\\d+)h").matcher(timeStr);
+                if (hMatcher.find()) totalMs += Long.parseLong(hMatcher.group(1)) * 3600000L;
+                
+                Matcher mMatcher = Pattern.compile("(\\d+)m").matcher(timeStr);
+                if (mMatcher.find()) totalMs += Long.parseLong(mMatcher.group(1)) * 60000L;
+                
+                Matcher sMatcher = Pattern.compile("(\\d+)s").matcher(timeStr);
+                if (sMatcher.find()) totalMs += Long.parseLong(sMatcher.group(1)) * 1000L;
+                
+            } else if (timeStr.contains(":")) {
+                String[] parts = timeStr.split(":");
+                if (parts.length == 3) {
+                    totalMs += Long.parseLong(parts[0]) * 3600000L;
+                    totalMs += Long.parseLong(parts[1]) * 60000L;
+                    totalMs += Long.parseLong(parts[2]) * 1000L;
+                } else if (parts.length == 2) {
+                    totalMs += Long.parseLong(parts[0]) * 60000L;
+                    totalMs += Long.parseLong(parts[1]) * 1000L;
                 }
             }
         } catch (Exception e) {
-            return 30 * 60 * 1000; 
+            return 0; 
         }
         return totalMs;
     }
 
-    private void startRentalTimer(long sessionDurationMs) {
+    private void startRentalSession(long ms) {
+        stopRentalTimer();
         isTimerRunning = true;
-        currentRentalTimeLeftMs = sessionDurationMs;
-
-        rentalTimer = new CountDownTimer(sessionDurationMs, 1000) {
+        currentRentalTimeLeftMs = ms;
+        hideSystemOverlay();
+        
+        rentalTimer = new CountDownTimer(ms, 1000) {
             @Override
             public void onTick(long millisUntilFinished) {
                 currentRentalTimeLeftMs = millisUntilFinished;
+                runOnUiThread(() -> updateFloatingTimerText(millisUntilFinished)); // Update floating UI
             }
 
             @Override
             public void onFinish() {
                 isTimerRunning = false;
-                stopExtensionLoop();
+                lastKnownRouterTimeMs = -1; // Reset tracker so a new coin acts as a fresh session
+                
+                // --- NEW: Force Logout to Cancel Remaining Router Session ---
+                forceMikrotikLogout();
+                
                 resetToLockView();
                 showSystemOverlay();
                 forceAppToFront();
-                Toast.makeText(MainActivity.this, "Rental Session Expired! Please insert coin.", Toast.LENGTH_LONG).show();
+                Toast.makeText(MainActivity.this, "App Time Expired! Insert coin for more.", Toast.LENGTH_LONG).show();
             }
         }.start();
     }
 
     private void stopRentalTimer() {
-        if (rentalTimer != null) {
-            rentalTimer.cancel();
-        }
+        if (rentalTimer != null) rentalTimer.cancel();
         isTimerRunning = false;
+        if (floatingTimerView != null) floatingTimerView.setVisibility(View.GONE);
+    }
+
+    // --- NEW: BACKGROUND LOGOUT FUNCTION ---
+    private void forceMikrotikLogout() {
+        new Thread(() -> {
+            try {
+                // Sends a silent HTTP GET request to the logout endpoint to cut the connection
+                Jsoup.connect(LOGOUT_URL).timeout(3000).get();
+            } catch (Exception e) {
+                // Fails silently if already disconnected
+            }
+        }).start();
     }
 
     private void resetToLockView() {
         if (portalWebView != null) {
-            portalWebView.setVisibility(View.GONE);
-            portalWebView.loadUrl("about:blank");
+            portalWebView.setVisibility(View.VISIBLE);
+            portalWebView.loadUrl(PORTAL_URL); 
         }
-        if (btnRetry != null) {
-            btnRetry.setVisibility(View.GONE);
-        }
-        if (txtStatus != null) {
-            txtStatus.setText("PISO PHONE RENTAL\n\nSession Expired!\nInsert Coin to Extend Time");
-            txtStatus.setVisibility(View.VISIBLE);
-        }
+        if (txtStatus != null) txtStatus.setVisibility(View.GONE);
+        if (btnRetry != null) btnRetry.setVisibility(View.GONE);
+        if (floatingTimerView != null) floatingTimerView.setVisibility(View.GONE);
     }
 
     private void onAdminClick() {
         final EditText input = new EditText(this);
-        
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Admin Bypass")
                 .setMessage("Input security pass:")
@@ -489,15 +538,14 @@ public class MainActivity extends AppCompatActivity {
                     if (input.getText().toString().equals(ADMIN_PASSWORD)) {
                         isAdminBypassed = true;
                         stopRentalTimer();
-                        stopExtensionLoop();
+                        stopSessionLoop();
                         hideSystemOverlay();
+                        if (floatingTimerView != null) floatingTimerView.setVisibility(View.GONE);
                         finish();
                     } else {
                         Toast.makeText(MainActivity.this, "Invalid Password", Toast.LENGTH_SHORT).show();
                     }
-                })
-                .setNegativeButton("Close", null)
-                .create();
+                }).setNegativeButton("Close", null).create();
 
         if (dialog.getWindow() != null) {
             dialog.getWindow().setType((Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ? 
@@ -516,6 +564,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == OVERLAY_PERMISSION_REQ_CODE) {
+            setupFloatingTimer();
             showSystemOverlay();
         }
     }
@@ -524,8 +573,15 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         stopRentalTimer();
-        stopExtensionLoop();
+        stopSessionLoop();
         hideSystemOverlay();
+        
+        if (floatingTimerView != null) {
+            try {
+                windowManager.removeView(floatingTimerView);
+            } catch (Exception e) { }
+        }
+        
         if (connectivityManager != null && networkCallback != null) {
             connectivityManager.unregisterNetworkCallback(networkCallback);
         }
