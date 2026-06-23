@@ -22,6 +22,8 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -60,11 +62,11 @@ public class MainActivity extends AppCompatActivity {
     
     private WebView portalWebView;
     private TextView txtStatus;
+    private Button btnRetry; 
     
     private boolean isOverlayShowing = false;
     private boolean isAdminBypassed = false;
     
-    // Countdown variables
     private CountDownTimer rentalTimer;
     private boolean isTimerRunning = false;
     private long currentRentalTimeLeftMs = 0;
@@ -130,18 +132,37 @@ public class MainActivity extends AppCompatActivity {
                 lastClickTime = currentTime;
             });
 
+            // 1. Setup Embedded Browser Panel
             portalWebView = new WebView(this);
             RelativeLayout.LayoutParams webParams = new RelativeLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-            webParams.setMargins(0, 0, 0, 250); 
+            webParams.setMargins(0, 0, 0, 320); 
             portalWebView.setVisibility(View.GONE); 
             
             WebSettings webSettings = portalWebView.getSettings();
             webSettings.setJavaScriptEnabled(true);
             webSettings.setDomStorageEnabled(true);
-            portalWebView.setWebViewClient(new WebViewClient());
+            
+            portalWebView.setWebViewClient(new WebViewClient() {
+                @Override
+                public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                    super.onReceivedError(view, request, error);
+                    runOnUiThread(() -> {
+                        if (btnRetry != null) btnRetry.setVisibility(View.VISIBLE);
+                    });
+                }
+
+                @Override
+                public void onPageFinished(WebView view, String url) {
+                    super.onPageFinished(view, url);
+                    if (!url.equals("about:blank") && btnRetry != null) {
+                        btnRetry.setVisibility(View.GONE);
+                    }
+                }
+            });
             overlayLayout.addView(portalWebView, webParams);
 
+            // 2. Setup Central Status Text Window
             txtStatus = new TextView(this);
             txtStatus.setText("PISO PHONE RENTAL\n\nInsert Coin to Start Using Phone");
             txtStatus.setTextColor(0xFFFFFFFF);
@@ -153,17 +174,36 @@ public class MainActivity extends AppCompatActivity {
             textParams.addRule(RelativeLayout.CENTER_IN_PARENT);
             overlayLayout.addView(txtStatus, textParams);
 
+            // 3. Setup Manual Refresh/Retry Connection Button Link
+            btnRetry = new Button(this);
+            btnRetry.setText("RETRY CONNECTION");
+            btnRetry.setTextColor(0xFFFFFFFF);
+            btnRetry.setBackgroundColor(0x44FFFFFF); 
+            btnRetry.setVisibility(View.GONE); 
+            btnRetry.setOnClickListener(v -> {
+                if (portalWebView != null) {
+                    btnRetry.setVisibility(View.GONE);
+                    portalWebView.loadUrl(PORTAL_URL);
+                }
+            });
+            RelativeLayout.LayoutParams retryParams = new RelativeLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            retryParams.addRule(RelativeLayout.CENTER_IN_PARENT);
+            retryParams.setMargins(0, 200, 0, 0); 
+            overlayLayout.addView(btnRetry, retryParams);
+
+            // 4. Setup Admin Login Control Button (Added last to float over WebView)
             Button btnAdmin = new Button(this);
             btnAdmin.setText("ADMIN LOGIN");
             btnAdmin.setTextColor(0xFF888888);
-            btnAdmin.setBackgroundColor(0x00000000);
+            btnAdmin.setBackgroundColor(0x00000000); 
             btnAdmin.setOnClickListener(v -> onAdminClick());
             
             RelativeLayout.LayoutParams btnParams = new RelativeLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             btnParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
             btnParams.addRule(RelativeLayout.CENTER_HORIZONTAL);
-            btnParams.setMargins(0, 0, 0, 100); 
+            btnParams.setMargins(0, 0, 0, 160); 
             overlayLayout.addView(btnAdmin, btnParams);
 
             int layoutType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ? 
@@ -205,7 +245,7 @@ public class MainActivity extends AppCompatActivity {
         try {
             windowManager.addView(statusBarShield, statusParams);
         } catch (Exception e) {
-            // Context backup security
+            // Layout trap
         }
     }
 
@@ -220,7 +260,7 @@ public class MainActivity extends AppCompatActivity {
                 }
                 isOverlayShowing = false;
             } catch (Exception e) {
-                // Main layout leak handler
+                // Window protection
             }
         });
     }
@@ -274,9 +314,11 @@ public class MainActivity extends AppCompatActivity {
                         } else if (isCaptivePortal && !isAdminBypassed) {
                             stopRentalTimer(); 
                             stopExtensionLoop();
-                            txtStatus.setVisibility(View.GONE);
-                            portalWebView.setVisibility(View.VISIBLE);
-                            portalWebView.loadUrl(PORTAL_URL);
+                            if (txtStatus != null) txtStatus.setVisibility(View.GONE);
+                            if (portalWebView != null) {
+                                portalWebView.setVisibility(View.VISIBLE);
+                                portalWebView.loadUrl(PORTAL_URL);
+                            }
                         } else if (!isTimerRunning) {
                             resetToLockView();
                             showSystemOverlay();
@@ -321,7 +363,6 @@ public class MainActivity extends AppCompatActivity {
         extensionCheckHandler.removeCallbacks(extensionCheckRunnable);
     }
 
-    // --- 50% DYNAMIC REDUCTION CALCULATION CORE ---
     private void fetchRouterSessionAndApplyFormula(boolean isCheckingForExtension) {
         new Thread(() -> {
             try {
@@ -335,10 +376,9 @@ public class MainActivity extends AppCompatActivity {
                     long currentRouterMs = parseTimeToMillis(currentRouterTimeStr);
 
                     if (isCheckingForExtension) {
-                        // Extension evaluation: checking if router time increased
                         if (currentRouterMs > lastKnownRouterTimeMs) {
                             long differenceMs = currentRouterMs - lastKnownRouterTimeMs;
-                            long reducedExtensionMs = differenceMs / 2; // Apply 50% cut to additional tokens
+                            long reducedExtensionMs = differenceMs / 2;
 
                             lastKnownRouterTimeMs = currentRouterMs;
                             runOnUiThread(() -> {
@@ -350,13 +390,11 @@ public class MainActivity extends AppCompatActivity {
                                 }
                             });
                         } else {
-                            // Sync background tracker clock down alongside the network ticks
                             lastKnownRouterTimeMs = currentRouterMs;
                         }
                     } else {
-                        // Fresh login initialization
                         lastKnownRouterTimeMs = currentRouterMs;
-                        long halvedInitialSessionMs = currentRouterMs / 2; // Slice time completely in half
+                        long halvedInitialSessionMs = currentRouterMs / 2;
 
                         runOnUiThread(() -> {
                             startRentalTimer(halvedInitialSessionMs);
@@ -365,24 +403,21 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
             } catch (IOException e) {
-                // Network fail protection
+                // Connection protection
             }
         }).start();
     }
 
-    // Parses standard MikroTik/JuanFi format variations into milliseconds (e.g., "1h30m", "01:10:00", "45m")
     private long parseTimeToMillis(String timeStr) {
         long totalMs = 0;
         try {
             if (timeStr.contains(":")) {
-                // Format handles HH:MM:SS
                 String[] units = timeStr.split(":");
                 long hours = Long.parseLong(units[0].trim());
                 long minutes = Long.parseLong(units[1].trim());
                 long seconds = Long.parseLong(units[2].trim());
                 totalMs = ((hours * 3600) + (minutes * 60) + seconds) * 1000;
             } else {
-                // Format handles mixed char labels like "1h20m" or "45m"
                 String temp = timeStr.trim();
                 if (temp.contains("h")) {
                     String[] parts = temp.split("h");
@@ -395,7 +430,7 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         } catch (Exception e) {
-            return 30 * 60 * 1000; // 30-minute default safety fallback if parsing error occurs
+            return 30 * 60 * 1000; 
         }
         return totalMs;
     }
@@ -433,6 +468,9 @@ public class MainActivity extends AppCompatActivity {
         if (portalWebView != null) {
             portalWebView.setVisibility(View.GONE);
             portalWebView.loadUrl("about:blank");
+        }
+        if (btnRetry != null) {
+            btnRetry.setVisibility(View.GONE);
         }
         if (txtStatus != null) {
             txtStatus.setText("PISO PHONE RENTAL\n\nSession Expired!\nInsert Coin to Extend Time");
