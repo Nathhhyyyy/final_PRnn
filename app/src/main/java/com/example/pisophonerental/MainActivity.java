@@ -38,10 +38,6 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
-
-import java.io.IOException;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -61,6 +57,8 @@ public class MainActivity extends AppCompatActivity {
     
     private WindowManager windowManager;
     private RelativeLayout overlayLayout;
+    private WindowManager.LayoutParams overlayParams; // Persistent layout controllers
+    private LinearLayout bottomPanel;
     private View statusBarShield;
     private TextView floatingTimerView; 
     
@@ -106,11 +104,11 @@ public class MainActivity extends AppCompatActivity {
                 startActivityForResult(intent, OVERLAY_PERMISSION_REQ_CODE);
             } else {
                 setupFloatingTimer();
-                showSystemOverlay();
+                initSystemOverlayWindow();
             }
         } else {
             setupFloatingTimer();
-            showSystemOverlay();
+            initSystemOverlayWindow();
         }
     }
 
@@ -159,12 +157,11 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void showSystemOverlay() {
-        if (isOverlayShowing || isAdminBypassed) return;
+    // Creates the window hierarchy exactly once to preserve background execution stability
+    private void initSystemOverlayWindow() {
+        if (overlayLayout != null) return;
 
         runOnUiThread(() -> {
-            if (floatingTimerView != null) floatingTimerView.setVisibility(View.GONE); 
-
             overlayLayout = new RelativeLayout(this);
             overlayLayout.setBackgroundColor(0xFF000000);
             
@@ -176,8 +173,7 @@ public class MainActivity extends AppCompatActivity {
                         isAdminBypassed = true;
                         stopRentalTimer();
                         stopSessionLoop();
-                        hideSystemOverlay();
-                        if (floatingTimerView != null) floatingTimerView.setVisibility(View.GONE);
+                        destroySystemOverlay();
                         finish();
                     }
                 } else {
@@ -186,7 +182,6 @@ public class MainActivity extends AppCompatActivity {
                 lastClickTime = currentTime;
             });
 
-            // WebView restricted to top portion to preserve clear space for panel
             portalWebView = new WebView(this);
             RelativeLayout.LayoutParams webParams = new RelativeLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
@@ -212,8 +207,7 @@ public class MainActivity extends AppCompatActivity {
             });
             overlayLayout.addView(portalWebView, webParams);
 
-            // Separate container ensures elements remain stacked non-overlapping
-            LinearLayout bottomPanel = new LinearLayout(this);
+            bottomPanel = new LinearLayout(this);
             bottomPanel.setOrientation(LinearLayout.VERTICAL);
             bottomPanel.setGravity(Gravity.CENTER_HORIZONTAL);
             bottomPanel.setPadding(30, 20, 30, 20);
@@ -256,20 +250,70 @@ public class MainActivity extends AppCompatActivity {
             int layoutType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ? 
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
 
-            WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+            overlayParams = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.MATCH_PARENT,
                     layoutType,
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_DIM_BEHIND,
                     PixelFormat.TRANSLUCENT
                 );
-            params.dimAmount = 1.0f; 
-            params.gravity = Gravity.CENTER;
+            overlayParams.dimAmount = 1.0f; 
+            overlayParams.gravity = Gravity.CENTER;
 
-            windowManager.addView(overlayLayout, params);
+            windowManager.addView(overlayLayout, overlayParams);
             isOverlayShowing = true;
 
             blockNotificationBar(layoutType);
+        });
+    }
+
+    private void showSystemOverlay() {
+        if (overlayLayout == null || isAdminBypassed) return;
+        runOnUiThread(() -> {
+            if (floatingTimerView != null) floatingTimerView.setVisibility(View.GONE); 
+
+            // Restore full-screen locking parameters
+            overlayParams.width = WindowManager.LayoutParams.MATCH_PARENT;
+            overlayParams.height = WindowManager.LayoutParams.MATCH_PARENT;
+            overlayParams.flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_DIM_BEHIND;
+            overlayParams.dimAmount = 1.0f;
+            
+            if (bottomPanel != null) bottomPanel.setVisibility(View.VISIBLE);
+            if (portalWebView != null) portalWebView.setVisibility(View.VISIBLE);
+            
+            windowManager.updateViewLayout(overlayLayout, overlayParams);
+            isOverlayShowing = true;
+            
+            int layoutType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ? 
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
+            blockNotificationBar(layoutType);
+        });
+    }
+
+    private void hideSystemOverlay() {
+        if (overlayLayout == null || !isOverlayShowing) return;
+        runOnUiThread(() -> {
+            try {
+                // The Ghost Window Trick: Shrink to 1x1 pixel and strip click interceptor flags
+                overlayParams.width = 1;
+                overlayParams.height = 1;
+                overlayParams.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                overlayParams.dimAmount = 0.0f;
+                
+                if (bottomPanel != null) bottomPanel.setVisibility(View.GONE);
+                
+                windowManager.updateViewLayout(overlayLayout, overlayParams);
+                
+                if (statusBarShield != null) {
+                    windowManager.removeView(statusBarShield);
+                    statusBarShield = null;
+                }
+                isOverlayShowing = false;
+                
+                if (isTimerRunning && floatingTimerView != null) {
+                    floatingTimerView.setVisibility(View.VISIBLE);
+                }
+            } catch (Exception e) { }
         });
     }
 
@@ -285,24 +329,6 @@ public class MainActivity extends AppCompatActivity {
         );
         statusParams.gravity = Gravity.TOP;
         try { windowManager.addView(statusBarShield, statusParams); } catch (Exception e) { }
-    }
-
-    private void hideSystemOverlay() {
-        if (!isOverlayShowing || overlayLayout == null) return;
-        runOnUiThread(() -> {
-            try {
-                windowManager.removeView(overlayLayout);
-                if (statusBarShield != null) {
-                    windowManager.removeView(statusBarShield);
-                    statusBarShield = null;
-                }
-                isOverlayShowing = false;
-                
-                if (isTimerRunning && floatingTimerView != null) {
-                    floatingTimerView.setVisibility(View.VISIBLE);
-                }
-            } catch (Exception e) { }
-        });
     }
 
     @Override
@@ -338,15 +364,11 @@ public class MainActivity extends AppCompatActivity {
 
                 if (currentSSID.equals(TARGET_SSID)) {
                     boolean hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
-                    boolean isCaptivePortal = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
-
                     runOnUiThread(() -> {
+                        startSessionLoop(); // Keep the verification loop rolling continuously
                         if (hasInternet && !isAdminBypassed) {
-                            startSessionLoop();
                             if (txtStatus != null) txtStatus.setText("PISO PHONE RENTAL");
-                            if (portalWebView != null) portalWebView.setVisibility(View.VISIBLE);
-                        } else if (isCaptivePortal && !isAdminBypassed) {
-                            stopSessionLoop();
+                        } else if (!isAdminBypassed && !isTimerRunning) {
                             resetToLockView();
                             showSystemOverlay();
                         }
@@ -375,7 +397,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void run() {
                 if (!isAdminBypassed) fetchRouterSessionAndApplyFormula();
-                loopHandler.postDelayed(this, 10000); 
+                loopHandler.postDelayed(this, 3000); 
             }
         };
     }
@@ -390,79 +412,60 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void fetchRouterSessionAndApplyFormula() {
-        new Thread(() -> {
-            try {
-                Document doc = Jsoup.connect(PORTAL_URL).timeout(5000).get();
-                String pageText = doc.body().text().toLowerCase();
-                
-                long currentRouterMs = 0;
-                
-                int remainIdx = pageText.indexOf("remain");
-                if (remainIdx == -1) remainIdx = pageText.indexOf("time left");
-                if (remainIdx == -1) remainIdx = pageText.indexOf("status: connected"); 
-                
-                if (remainIdx != -1) {
-                    String substring = pageText.substring(remainIdx);
-                    Matcher m = Pattern.compile("(\\d+\\s*h\\s*:?\\s*\\d+\\s*m\\s*:?\\s*\\d+\\s*s|\\d+\\s*m\\s*:?\\s*\\d+\\s*s|\\d+:\\d+:\\d+|\\d+\\s*h\\s*\\d+\\s*m|\\d+\\s*m|\\d+\\s*s)").matcher(substring);
-                    if (m.find()) {
-                        currentRouterMs = parseTimeToMillis(m.group(1));
-                    }
-                }
+        if (portalWebView == null) return;
+        
+        runOnUiThread(() -> {
+            portalWebView.evaluateJavascript(
+                "(function() { return document.body.innerText; })();",
+                html -> {
+                    if (html == null || html.equals("null")) return;
+                    
+                    String pageText = html.toLowerCase().replace("\\n", " ").replace("\"", "");
+                    if (!pageText.contains("connected")) return;
 
-                if (currentRouterMs > 0) {
-                    if (lastKnownRouterTimeMs == -1) {
-                        lastKnownRouterTimeMs = currentRouterMs;
-                        long halvedMs = currentRouterMs / 2;
-                        runOnUiThread(() -> startRentalSession(halvedMs));
-                    } else {
-                        if (currentRouterMs > lastKnownRouterTimeMs + 5000) {
-                            long diffMs = currentRouterMs - lastKnownRouterTimeMs;
-                            long reducedExtensionMs = diffMs / 2;
-                            lastKnownRouterTimeMs = currentRouterMs; 
-                            
-                            runOnUiThread(() -> {
+                    long currentRouterMs = parseTimeToMillisDirect(pageText);
+
+                    if (currentRouterMs > 0) {
+                        if (lastKnownRouterTimeMs == -1) {
+                            lastKnownRouterTimeMs = currentRouterMs;
+                            long halvedMs = currentRouterMs / 2;
+                            startRentalSession(halvedMs); 
+                        } else {
+                            // Detects extensions of ANY scale/coin variance perfectly
+                            if (currentRouterMs > lastKnownRouterTimeMs + 5000) { 
+                                long diffMs = currentRouterMs - lastKnownRouterTimeMs;
+                                long reducedExtensionMs = diffMs / 2;
+                                lastKnownRouterTimeMs = currentRouterMs; 
+                                
                                 long newTime = isTimerRunning ? currentRentalTimeLeftMs + reducedExtensionMs : reducedExtensionMs;
                                 startRentalSession(newTime);
                                 Toast.makeText(MainActivity.this, "Coin Inserted! Time Extended.", Toast.LENGTH_SHORT).show();
-                            });
-                        } else {
-                            lastKnownRouterTimeMs = currentRouterMs;
+                            } else {
+                                lastKnownRouterTimeMs = currentRouterMs;
+                            }
                         }
                     }
                 }
-            } catch (IOException e) {
-                // Connection failures fall back gracefully
-            }
-        }).start();
+            );
+        });
     }
 
-    private long parseTimeToMillis(String timeStr) {
+    private long parseTimeToMillisDirect(String text) {
         long totalMs = 0;
         try {
-            timeStr = timeStr.toLowerCase().replaceAll("\\s+", ""); 
+            Matcher m1 = Pattern.compile("(\\d+)\\s*h\\s*:\\s*(\\d+)\\s*m\\s*:\\s*(\\d+)\\s*s").matcher(text);
+            if (m1.find()) {
+                totalMs += Long.parseLong(m1.group(1)) * 3600000L;
+                totalMs += Long.parseLong(m1.group(2)) * 60000L;
+                totalMs += Long.parseLong(m1.group(3)) * 1000L;
+                return totalMs;
+            }
             
-            if (timeStr.contains("h") || timeStr.contains("m") || timeStr.contains("s")) {
-                timeStr = timeStr.replace(":", ""); 
-                
-                Matcher hMatcher = Pattern.compile("(\\d+)h").matcher(timeStr);
-                if (hMatcher.find()) totalMs += Long.parseLong(hMatcher.group(1)) * 3600000L;
-                
-                Matcher mMatcher = Pattern.compile("(\\d+)m").matcher(timeStr);
-                if (mMatcher.find()) totalMs += Long.parseLong(mMatcher.group(1)) * 60000L;
-                
-                Matcher sMatcher = Pattern.compile("(\\d+)s").matcher(timeStr);
-                if (sMatcher.find()) totalMs += Long.parseLong(sMatcher.group(1)) * 1000L;
-                
-            } else if (timeStr.contains(":")) {
-                String[] parts = timeStr.split(":");
-                if (parts.length == 3) {
-                    totalMs += Long.parseLong(parts[0]) * 3600000L;
-                    totalMs += Long.parseLong(parts[1]) * 60000L;
-                    totalMs += Long.parseLong(parts[2]) * 1000L;
-                } else if (parts.length == 2) {
-                    totalMs += Long.parseLong(parts[0]) * 60000L;
-                    totalMs += Long.parseLong(parts[1]) * 1000L;
-                }
+            Matcher m2 = Pattern.compile("(\\d+)\\s*m\\s*:\\s*(\\d+)\\s*s").matcher(text);
+            if (m2.find()) {
+                totalMs += Long.parseLong(m2.group(1)) * 60000L;
+                totalMs += Long.parseLong(m2.group(2)) * 1000L;
+                return totalMs;
             }
         } catch (Exception e) {
             return 0; 
@@ -474,7 +477,7 @@ public class MainActivity extends AppCompatActivity {
         stopRentalTimer();
         isTimerRunning = true;
         currentRentalTimeLeftMs = ms;
-        hideSystemOverlay();
+        hideSystemOverlay(); 
         
         rentalTimer = new CountDownTimer(ms, 1000) {
             @Override
@@ -505,13 +508,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void forceMikrotikLogout() {
-        new Thread(() -> {
-            try {
-                Jsoup.connect(LOGOUT_URL).timeout(3000).get();
-            } catch (Exception e) {
-                // Silently drop trace if network drops first
+        runOnUiThread(() -> {
+            if (portalWebView != null) {
+                portalWebView.loadUrl(LOGOUT_URL);
             }
-        }).start();
+        });
     }
 
     private void resetToLockView() {
@@ -522,6 +523,22 @@ public class MainActivity extends AppCompatActivity {
         if (txtStatus != null) txtStatus.setText("PISO PHONE RENTAL");
         if (btnRetry != null) btnRetry.setVisibility(View.GONE);
         if (floatingTimerView != null) floatingTimerView.setVisibility(View.GONE);
+    }
+
+    private void destroySystemOverlay() {
+        runOnUiThread(() -> {
+            try {
+                if (overlayLayout != null) {
+                    windowManager.removeView(overlayLayout);
+                    overlayLayout = null;
+                }
+                if (statusBarShield != null) {
+                    windowManager.removeView(statusBarShield);
+                    statusBarShield = null;
+                }
+                if (floatingTimerView != null) floatingTimerView.setVisibility(View.GONE);
+            } catch (Exception e) { }
+        });
     }
 
     private void onAdminClick() {
@@ -535,8 +552,7 @@ public class MainActivity extends AppCompatActivity {
                         isAdminBypassed = true;
                         stopRentalTimer();
                         stopSessionLoop();
-                        hideSystemOverlay();
-                        if (floatingTimerView != null) floatingTimerView.setVisibility(View.GONE);
+                        destroySystemOverlay();
                         finish();
                     } else {
                         Toast.makeText(MainActivity.this, "Invalid Password", Toast.LENGTH_SHORT).show();
@@ -561,7 +577,7 @@ public class MainActivity extends AppCompatActivity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == OVERLAY_PERMISSION_REQ_CODE) {
             setupFloatingTimer();
-            showSystemOverlay();
+            initSystemOverlayWindow();
         }
     }
 
@@ -570,7 +586,7 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
         stopRentalTimer();
         stopSessionLoop();
-        hideSystemOverlay();
+        destroySystemOverlay();
         
         if (floatingTimerView != null) {
             try {
