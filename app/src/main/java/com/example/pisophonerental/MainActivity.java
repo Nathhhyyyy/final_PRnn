@@ -60,7 +60,6 @@ public class MainActivity extends AppCompatActivity {
     
     private WindowManager windowManager;
     private RelativeLayout overlayLayout;
-    private View statusBarShield;
     private TextView floatingTimerView;
     
     private WebView portalWebView;
@@ -72,14 +71,9 @@ public class MainActivity extends AppCompatActivity {
     
     private CountDownTimer rentalTimer;
     private boolean isTimerRunning = false;
-    private long currentRentalTimeLeftMs = 0;
     
     private Handler loopHandler = new Handler(Looper.getMainLooper());
     private Runnable sessionLoopRunnable;
-    private long lastKnownRouterTimeMs = -1; 
-
-    private int safetyClickCount = 0;
-    private long lastClickTime = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -93,15 +87,20 @@ public class MainActivity extends AppCompatActivity {
 
         setupSessionLoop();
         checkOverlayPermission();
-        checkPermissions();
+        checkPermissions(); // Method restored!
         startNetworkTracking();
+    }
+
+    private void checkPermissions() {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, LOCATION_PERMISSION_REQUEST_CODE);
+        }
     }
 
     private void checkOverlayPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (!Settings.canDrawOverlays(this)) {
-                Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:" + getPackageName()));
+                Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()));
                 startActivityForResult(intent, OVERLAY_PERMISSION_REQ_CODE);
             } else {
                 setupFloatingTimer();
@@ -115,25 +114,18 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupFloatingTimer() {
         if (floatingTimerView != null) return;
-        
         runOnUiThread(() -> {
             floatingTimerView = new TextView(this);
             floatingTimerView.setTextColor(0xFFFFFFFF);
             floatingTimerView.setBackgroundColor(0xAA000000);
             floatingTimerView.setPadding(30, 10, 30, 10);
             floatingTimerView.setTextSize(14);
-            floatingTimerView.setGravity(Gravity.CENTER);
             floatingTimerView.setVisibility(View.GONE);
 
-            int layoutType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ? 
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
-
+            int layoutType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
             WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.WRAP_CONTENT,
-                    WindowManager.LayoutParams.WRAP_CONTENT,
-                    layoutType,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                    PixelFormat.TRANSLUCENT
+                    WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                    layoutType, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, PixelFormat.TRANSLUCENT
             );
             params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
             params.y = 50;
@@ -151,32 +143,16 @@ public class MainActivity extends AppCompatActivity {
 
     private void showSystemOverlay() {
         if (isOverlayShowing || isAdminBypassed) return;
-
         runOnUiThread(() -> {
             overlayLayout = new RelativeLayout(this);
             overlayLayout.setBackgroundColor(0xFF000000);
             
-            overlayLayout.setOnClickListener(v -> {
-                long currentTime = System.currentTimeMillis();
-                if (currentTime - lastClickTime < 500) {
-                    safetyClickCount++;
-                    if (safetyClickCount >= 5) {
-                        isAdminBypassed = true;
-                        finish();
-                    }
-                } else { safetyClickCount = 1; }
-                lastClickTime = currentTime;
-            });
-
             portalWebView = new WebView(this);
-            RelativeLayout.LayoutParams webParams = new RelativeLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            RelativeLayout.LayoutParams webParams = new RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
             webParams.setMargins(0, 0, 0, 320); 
             portalWebView.loadUrl(PORTAL_URL);
-            
-            WebSettings webSettings = portalWebView.getSettings();
-            webSettings.setJavaScriptEnabled(true);
-            webSettings.setDomStorageEnabled(true);
+            portalWebView.getSettings().setJavaScriptEnabled(true);
+            portalWebView.getSettings().setDomStorageEnabled(true);
             
             portalWebView.setWebViewClient(new WebViewClient() {
                 @Override
@@ -192,9 +168,7 @@ public class MainActivity extends AppCompatActivity {
             txtStatus.setTextColor(0xFFFFFFFF);
             txtStatus.setTextSize(24);
             txtStatus.setGravity(Gravity.CENTER);
-            
-            RelativeLayout.LayoutParams textParams = new RelativeLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            RelativeLayout.LayoutParams textParams = new RelativeLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             textParams.addRule(RelativeLayout.CENTER_IN_PARENT);
             overlayLayout.addView(txtStatus, textParams);
 
@@ -205,21 +179,15 @@ public class MainActivity extends AppCompatActivity {
                 btnRetry.setVisibility(View.GONE);
                 portalWebView.loadUrl(PORTAL_URL);
             });
-            RelativeLayout.LayoutParams retryParams = new RelativeLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            RelativeLayout.LayoutParams retryParams = new RelativeLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             retryParams.addRule(RelativeLayout.BELOW, txtStatus.getId());
             retryParams.addRule(RelativeLayout.CENTER_HORIZONTAL);
             overlayLayout.addView(btnRetry, retryParams);
 
-            int layoutType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ? 
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
-
+            int layoutType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
             WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    layoutType,
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_DIM_BEHIND,
-                    PixelFormat.TRANSLUCENT
+                    WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                    layoutType, WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_DIM_BEHIND, PixelFormat.TRANSLUCENT
             );
             params.dimAmount = 1.0f;
             windowManager.addView(overlayLayout, params);
@@ -237,9 +205,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startNetworkTracking() {
-        NetworkRequest networkRequest = new NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build();
-
+        NetworkRequest networkRequest = new NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build();
         networkCallback = new ConnectivityManager.NetworkCallback() {
             @Override
             public void onCapabilitiesChanged(@NonNull Network network, @NonNull NetworkCapabilities capabilities) {
@@ -271,15 +237,12 @@ public class MainActivity extends AppCompatActivity {
             try {
                 Document doc = Jsoup.connect(PORTAL_URL).timeout(5000).get();
                 String pageText = doc.body().text().toLowerCase();
-                
                 int remainIdx = pageText.indexOf("remain");
                 if (remainIdx != -1) {
                     Matcher m = Pattern.compile("(\\d+):(\\d+):(\\d+)").matcher(pageText.substring(remainIdx));
                     if (m.find()) {
                         long ms = (Long.parseLong(m.group(1)) * 3600000L) + (Long.parseLong(m.group(2)) * 60000L) + (Long.parseLong(m.group(3)) * 1000L);
-                        if (ms > 0) {
-                            runOnUiThread(() -> startRentalSession(ms / 2));
-                        }
+                        if (ms > 0) runOnUiThread(() -> startRentalSession(ms / 2));
                     }
                 }
             } catch (IOException e) {}
@@ -290,13 +253,9 @@ public class MainActivity extends AppCompatActivity {
         if (isTimerRunning) return;
         isTimerRunning = true;
         hideSystemOverlay();
-        
         rentalTimer = new CountDownTimer(ms, 1000) {
             @Override
-            public void onTick(long millisUntilFinished) {
-                updateFloatingTimerText(millisUntilFinished);
-            }
-
+            public void onTick(long millisUntilFinished) { updateFloatingTimerText(millisUntilFinished); }
             @Override
             public void onFinish() {
                 isTimerRunning = false;
